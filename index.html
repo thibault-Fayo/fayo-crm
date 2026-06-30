@@ -1129,14 +1129,9 @@ async function saveCardDate(e, rowIndex) {
   var newDate = fromInputDate(newDateInput);
   if (!newDate) return;
 
-  var account = null;
-  var foundTab = currentTab;
-  var tabs = ['CRM', 'Clients', 'Distrib'];
-  for (var i = 0; i < tabs.length; i++) {
-    var found = (allData[tabs[i]] || []).filter(function(r) { return r._rowIndex === rowIndex; })[0];
-    if (found) { account = found; foundTab = tabs[i]; break; }
-  }
+  var account = (allData[currentTab] || []).filter(function(r) { return r._rowIndex === rowIndex; })[0];
   if (!account) return;
+  var foundTab = currentTab;
 
   var oldDate = account['Date prochaine action'] || '';
   account['Date prochaine action'] = newDate;
