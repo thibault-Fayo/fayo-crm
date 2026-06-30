@@ -132,7 +132,7 @@
   .comment-history { padding: 12px 16px; max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   .comment-entry { padding: 8px 10px; background: var(--green-bg); border-radius: var(--radius-sm); font-size: 13px; line-height: 1.5; }
   .comment-date { font-weight: 700; color: var(--green); font-size: 12px; margin-bottom: 2px; }
-  .new-comment-wrap { padding: 12px 16px; border-top: 1px solid var(--green-bg); }
+  .new-comment-wrap { padding: 12px 16px; border-bottom: 1px solid var(--green-bg); }
   .new-comment-wrap textarea { width: 100%; padding: 10px 12px; border: 1.5px solid var(--border); border-radius: var(--radius-sm); font-size: 14px; color: var(--text); outline: none; font-family: inherit; min-height: 70px; resize: none; }
   .trac-history { padding: 12px 16px; max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
   .trac-entry { font-size: 12px; color: var(--text-muted); line-height: 1.4; padding: 6px 8px; border-left: 3px solid var(--border); }
@@ -758,8 +758,12 @@ function switchTab(tab) {
   filterCards();
 }
 
+function normalizeStr(str) {
+  return (str || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 function filterCards() {
-  const search = document.getElementById('searchInput').value.toLowerCase();
+  const search = normalizeStr(document.getElementById('searchInput').value);
   const dateFilter = document.getElementById('dateFilter').value; // YYYY-MM-DD
   const sort = document.getElementById('sortSelect').value;
 
@@ -768,7 +772,7 @@ function filterCards() {
 
   let rows = [...(allData[currentTab] || [])];
 
-  if (search) rows = rows.filter(r => (r['Site']||'').toLowerCase().includes(search));
+  if (search) rows = rows.filter(r => normalizeStr(r['Site']).includes(search));
 
   // Filtres multi-choix
   if (activeFilters.region.length) rows = rows.filter(r => activeFilters.region.includes(r['Région'] || r['Region'] || ''));
@@ -991,8 +995,8 @@ function renderDetail(r, contacts) {
     '</div>' +
     '<div class="edit-section">' +
       '<div class="section-title">💬 Commentaires</div>' +
-      commentHtml +
       '<div class="new-comment-wrap"><textarea id="edit_new_comment" placeholder="Ajouter un nouveau commentaire…"></textarea></div>' +
+      commentHtml +
     '</div>' +
     tracSection;
 }
@@ -1166,21 +1170,39 @@ async function saveChanges() {
 
   const payload = { onglet: currentTab, rowIndex: currentAccount._rowIndex, fields, oldValues, responsable: currentUser };
 
-  // Mettre à jour le cache local immédiatement
-  Object.assign(currentAccount, fields);
+  // Mettre à jour le cache local immédiatement (sauf le commentaire brut, géré séparément)
+  const fieldsForLocal = Object.assign({}, fields);
+  delete fieldsForLocal['__new_comment__'];
+  Object.assign(currentAccount, fieldsForLocal);
+
+  // Insérer le nouveau commentaire localement EN HAUT, avec date, pour affichage immédiat
+  if (newComment) {
+    const commentField = currentAccount.hasOwnProperty('Commentaires Clients') ? 'Commentaires Clients' : 'Commentaires';
+    const today = new Date();
+    const dd = String(today.getDate()).padStart(2, '0');
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const yyyy = today.getFullYear();
+    const localDateStr = dd + '/' + mm + '/' + yyyy;
+    const newLine = '[' + localDateStr + '] - ' + newComment;
+    const existing = currentAccount[commentField] || '';
+    currentAccount[commentField] = existing ? newLine + '\n' + existing : newLine;
+  }
+
   if (allData[currentTab]) {
     const idx = allData[currentTab].findIndex(r => r._rowIndex === currentAccount._rowIndex);
-    if (idx !== -1) allData[currentTab][idx] = Object.assign({}, allData[currentTab][idx], fields);
+    if (idx !== -1) allData[currentTab][idx] = Object.assign({}, allData[currentTab][idx], currentAccount);
   }
   saveCache(allData, filtersData);
+
+  // Réafficher immédiatement avec le nouveau commentaire visible
+  if (newComment) document.getElementById('edit_new_comment').value = '';
+  renderDetail(currentAccount, []);
+  filterCards();
 
   if (!navigator.onLine) {
     // Pas de réseau — stocker pour plus tard
     addPending(payload);
-    if (newComment) document.getElementById('edit_new_comment').value = '';
     showToast('📶 Sauvegardé localement — envoi dès que le réseau revient', '');
-    filterCards();
-    setTimeout(function() { renderDetail(currentAccount, []); }, 400);
     btn.disabled = false; btn.textContent = 'Enregistrer les modifications';
     return;
   }
@@ -1196,10 +1218,7 @@ async function saveChanges() {
       if (!json.ok) throw new Error(json.error);
     }
     // res null = timeout Apps Script, on considère que ça a marché (comportement habituel)
-    if (newComment) document.getElementById('edit_new_comment').value = '';
     showToast('✅ Enregistré !', 'success');
-    filterCards();
-    setTimeout(function() { renderDetail(currentAccount, []); }, 600);
   } catch(e) {
     // Seulement si c'est une vraie erreur (pas un timeout)
     if (!navigator.onLine) {
