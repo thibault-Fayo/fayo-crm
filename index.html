@@ -211,7 +211,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
       <span id="currentUserBadge" style="font-size:12px;background:rgba(255,255,255,0.2);padding:4px 10px;border-radius:10px;"></span>
       <button onclick="loadAllData()" style="background:rgba(255,255,255,0.2);border:none;color:white;padding:6px 10px;border-radius:6px;font-size:14px;cursor:pointer;" title="Rafraichir">&#8635;</button>
-      <span id="syncBadge" style="display:none;background:#E67E22;color:white;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px;cursor:pointer;" onclick="syncPending()" title="Modifications en attente - cliquer pour synchroniser"></span>
+      <span id="syncBadge" style="display:none;background:#E67E22;color:white;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px;cursor:pointer;" onclick="handleSyncBadgeClick()" title="Cliquer pour synchroniser / maintenir pour effacer"></span>
       <button onclick="openNewContactModal()" style="background:rgba(255,255,255,0.2);border:none;color:white;padding:6px 10px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">+ Contact</button>
       <button onclick="showConfigView()" style="background:rgba(255,255,255,0.2);border:none;color:white;padding:6px 10px;border-radius:6px;font-size:12px;cursor:pointer;">Cfg</button>
     </div>
@@ -681,6 +681,46 @@ function updateSyncBadge() {
   }
 }
 
+var syncBadgePressTimer = null;
+function handleSyncBadgeClick() {
+  // Appui court : synchroniser
+  syncPending();
+}
+function handleSyncBadgeLongPress() {
+  // Appui long (600ms) : proposer de vider manuellement
+  var count = getPending().length;
+  if (!count) return;
+  var confirmed = window.confirm(
+    count + ' modification(s) en attente.\n\n' +
+    'Si tu as verifie que les donnees sont bien dans le Google Sheet, ' +
+    'tu peux vider la file d\'attente.\n\n' +
+    'Vider la file ?'
+  );
+  if (confirmed) {
+    localStorage.removeItem(PENDING_KEY);
+    isSavePending = false;
+    updateSyncBadge();
+    showToast('File d\'attente videe', 'success');
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  var badge = document.getElementById('syncBadge');
+  if (!badge) return;
+  badge.addEventListener('touchstart', function() {
+    syncBadgePressTimer = setTimeout(handleSyncBadgeLongPress, 600);
+  });
+  badge.addEventListener('touchend', function() {
+    clearTimeout(syncBadgePressTimer);
+  });
+  badge.addEventListener('mousedown', function() {
+    syncBadgePressTimer = setTimeout(handleSyncBadgeLongPress, 600);
+  });
+  badge.addEventListener('mouseup', function() {
+    clearTimeout(syncBadgePressTimer);
+  });
+});
+
 async function syncPending() {
   var pending = getPending();
   if (!pending.length) return;
@@ -695,14 +735,16 @@ async function syncPending() {
   var token = localStorage.getItem('fayo_id_token') || '';
   var remaining = [];
   var successCount = 0;
+  // Timeout plus long pour le sync (Apps Script peut être lent à répondre)
   for (var i = 0; i < pending.length; i++) {
-    var ok = await sendWithRetry(pending[i].payload, token, 2);
+    var ok = await sendWithRetry(pending[i].payload, token, 3, 30000);
     if (ok) { successCount++; } else { remaining.push(pending[i]); }
   }
   localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
+  if (remaining.length === 0) isSavePending = false;
   updateSyncBadge();
   if (successCount > 0) showToast(successCount + ' modification(s) synchronisee(s)', 'success');
-  if (remaining.length > 0) showToast(remaining.length + ' modification(s) toujours en attente', 'error');
+  if (remaining.length > 0) showToast(remaining.length + ' modification(s) toujours en attente - verifiez votre connexion', 'error');
 }
 
 window.addEventListener('online', function() {
@@ -722,12 +764,13 @@ window.addEventListener('beforeunload', function(e) {
 // Principe : on ne retourne JAMAIS true sans json.ok === true du serveur.
 // Tout timeout, erreur HTTP, JSON invalide ou ok != true => false => addPending.
 // ============================================================
-async function sendWithRetry(payload, token, maxAttempts) {
+async function sendWithRetry(payload, token, maxAttempts, timeoutMs) {
+  var timeout = timeoutMs || 18000;
   var delays = [1000, 2000, 4000];
   for (var attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       var controller = new AbortController();
-      var timeoutId = setTimeout(function() { controller.abort(); }, 18000);
+      var timeoutId = setTimeout(function() { controller.abort(); }, timeout);
 
       var res = await fetch(SCRIPT_URL, {
         method: 'POST',
@@ -1512,7 +1555,7 @@ async function saveChanges() {
 
   if (!navigator.onLine) {
     addPending(payload);
-    isSavePending = true;
+    isSavePending = false; // en file d'attente, pas en cours d'envoi
     showToast('Hors reseau - sauvegarde localement, envoi automatique au retour du reseau', '');
     btn.disabled = false;
     btn.textContent = 'Enregistrer les modifications';
