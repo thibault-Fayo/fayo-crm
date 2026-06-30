@@ -397,13 +397,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 // ============================================================
 var ALLOWED_DOMAIN = 'fayo.fr';
 
-var ETAPES = {
-  CRM: ['Premier contact','Suivi intermédiaire - prosp','Dégustation','Suivi intermédiaire - dégustation','Premier service','No go','Client'],
-  Clients: ['Nouveau client','A pousser','Etalon','Services Réguliers','Perte de vitesse','Ballotage','Perdu'],
-  Distrib: ['Premier contact','Négociation','En cours de réf','Ballotage','Perdu','Référencé','Ref perdu','Perte de vitesse','A pousser','Commandes régulières']
-};
-
-var PROCHAINES_ACTIONS = ['Relance tel','Relance mail','RDV prévu','Visio prévue','Mail à faire','SMS à faire'];
+// Étapes et prochaines actions chargées dynamiquement depuis le sheet (voir filtersData)
 
 var SCRIPT_URL = localStorage.getItem('fayo_script_url') || '';
 var CLIENT_ID = localStorage.getItem('fayo_client_id') || '';
@@ -1345,29 +1339,28 @@ function infoItem(label, value) {
 }
 
 function buildEtapeOpts(r) {
-  var etapes = ETAPES[currentTab] || [];
+  var etapes = (filtersData.etapes && filtersData.etapes[currentTab]) || [];
   var current = r['Etape'] || r['Étape'] || '';
-  var html = '';
-  for (var i = 0; i < etapes.length; i++) {
-    html += '<option value="' + escAttr(etapes[i]) + '"' + (current === etapes[i] ? ' selected' : '') + '>' + escHtml(etapes[i]) + '</option>';
-  }
-  return html;
+  return buildSelectOpts(etapes, current);
 }
 
 function buildActionOpts(r) {
+  var actions = filtersData.prochaines_actions || [];
   var current = r['Prochaine action'] || '';
-  var html = '';
-  for (var i = 0; i < PROCHAINES_ACTIONS.length; i++) {
-    var a = PROCHAINES_ACTIONS[i];
-    html += '<option value="' + escAttr(a) + '"' + (current === a ? ' selected' : '') + '>' + escHtml(a) + '</option>';
-  }
-  return html;
+  return buildSelectOpts(actions, current);
 }
 
 function buildSelectOpts(list, current) {
   var html = '';
+  var found = false;
   for (var i = 0; i < list.length; i++) {
-    html += '<option value="' + escAttr(list[i]) + '"' + (current === list[i] ? ' selected' : '') + '>' + escHtml(list[i]) + '</option>';
+    var match = (current === list[i]);
+    if (match) found = true;
+    html += '<option value="' + escAttr(list[i]) + '"' + (match ? ' selected' : '') + '>' + escHtml(list[i]) + '</option>';
+  }
+  // Valeur présente dans le sheet mais absente de la liste → l'afficher quand même
+  if (current && !found) {
+    html = '<option value="' + escAttr(current) + '" selected>' + escHtml(current) + '</option>' + html;
   }
   return html;
 }
