@@ -360,6 +360,21 @@
   </div>
 </div>
 
+<!-- MODAL CONFIRMATION MODIFICATIONS NON ENREGISTRÉES -->
+<div id="unsavedConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:white;border-radius:16px;padding:24px 20px;max-width:340px;width:100%;text-align:center;">
+    <div style="font-size:32px;margin-bottom:8px;">✏️</div>
+    <h3 style="font-size:17px;font-weight:700;color:var(--text);margin-bottom:8px;">Modifications non enregistrées</h3>
+    <p style="font-size:14px;color:var(--text-muted);line-height:1.5;margin-bottom:20px;">
+      Tu as fait des changements sur cette fiche sans cliquer sur "Enregistrer". Si tu quittes maintenant, ils seront perdus.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button id="unsavedStayBtn" style="padding:13px;background:var(--green);color:white;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;">Rester et enregistrer</button>
+      <button id="unsavedLeaveBtn" style="padding:13px;background:white;color:var(--red);border:1.5px solid var(--red);border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;">Quitter sans enregistrer</button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL CONFIRMATION QUITTER AVEC SAUVEGARDE EN ATTENTE -->
 <div id="leaveConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;padding:20px;">
   <div style="background:white;border-radius:16px;padding:24px 20px;max-width:340px;width:100%;text-align:center;">
@@ -394,6 +409,7 @@ let allData = { CRM: [], Clients: [], Distrib: [] };
 let currentTab = 'CRM';
 let currentAccount = null;
 let isSavePending = false; // true tant qu'une sauvegarde n'est pas confirmée
+let formSnapshot = null; // snapshot du formulaire à l'ouverture, pour détecter les changements non sauvegardés
 
 // Filtres multi-choix
 let filtersData = { regions: [], distributeurs: [], responsables: [] };
@@ -417,12 +433,54 @@ function updatePendingIndicator() {
   updateSyncBadge();
 }
 
+function getFormValues() {
+  const get = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  return {
+    etape: get('edit_etape'),
+    action: get('edit_action'),
+    details: get('edit_details'),
+    dateAction: get('edit_date_action'),
+    dateContact: get('edit_date_contact'),
+    distributeur: get('edit_distributeur'),
+    responsable: get('edit_responsable'),
+    taille: get('edit_taille'),
+    newComment: get('edit_new_comment')
+  };
+}
+
+function captureFormSnapshot() {
+  // Attendre que le DOM soit rendu
+  setTimeout(function() { formSnapshot = JSON.stringify(getFormValues()); }, 50);
+}
+
+function hasUnsavedChanges() {
+  if (!formSnapshot) return false;
+  const current = JSON.stringify(getFormValues());
+  return current !== formSnapshot;
+}
+
 function showList() {
+  if (hasUnsavedChanges()) {
+    confirmLeaveUnsaved(function() { formSnapshot = null; showOnly('listView'); });
+    return;
+  }
   if (isSavePending || getPending().length > 0) {
     confirmLeaveWithPending(function() { showOnly('listView'); });
     return;
   }
   showOnly('listView');
+}
+
+function confirmLeaveUnsaved(onConfirmLeave) {
+  const modal = document.getElementById('unsavedConfirmModal');
+  modal.style.display = 'flex';
+  document.getElementById('unsavedLeaveBtn').onclick = function() {
+    modal.style.display = 'none';
+    onConfirmLeave();
+  };
+  document.getElementById('unsavedStayBtn').onclick = function() {
+    modal.style.display = 'none';
+  };
 }
 
 function confirmLeaveWithPending(onConfirmLeave) {
@@ -655,9 +713,9 @@ async function syncPending() {
   if (remaining.length > 0) showToast('⚠️ ' + remaining.length + ' modification(s) toujours en attente', 'error');
 }
 
-// Avertir avant de fermer l'app/onglet s'il y a des sauvegardes non confirmées
+// Avertir avant de fermer l'app/onglet s'il y a des sauvegardes non confirmées ou des changements non enregistrés
 window.addEventListener('beforeunload', function(e) {
-  if (isSavePending || getPending().length > 0) {
+  if (isSavePending || getPending().length > 0 || hasUnsavedChanges()) {
     e.preventDefault();
     e.returnValue = '';
   }
@@ -956,6 +1014,7 @@ async function openDetail(account) {
   document.getElementById('detailOnglet').textContent = currentTab === 'Distrib' ? 'Distrib & SRC' : currentTab;
   showOnly('detailView');
   renderDetail(account, []);
+  captureFormSnapshot();
 
   // Charger les contacts depuis Base contacts
   const groupe = account['Groupe'] || '';
@@ -970,6 +1029,7 @@ async function openDetail(account) {
       // (l'utilisateur n'a pas ouvert une autre fiche pendant le chargement)
       if (currentAccount && currentAccount._rowIndex === openedRowIndex && json.ok && json.data.length > 0) {
         renderDetail(currentAccount, json.data);
+        captureFormSnapshot();
       }
     } catch(e) {}
   }
@@ -1251,6 +1311,7 @@ async function saveChanges() {
   // Réafficher immédiatement avec le nouveau commentaire visible
   if (newComment) document.getElementById('edit_new_comment').value = '';
   renderDetail(currentAccount, []);
+  captureFormSnapshot(); // les données affichées sont maintenant "sauvegardées" (au moins localement)
   filterCards();
 
   if (!navigator.onLine) {
