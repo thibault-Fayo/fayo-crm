@@ -1575,8 +1575,9 @@ async function saveChanges() {
     showToast('Enregistre et confirme !', 'success');
   } else {
     addPending(payload);
-    isSavePending = true;
-    showToast('Pas de confirmation serveur - mis en file d\'attente (badge orange = en attente)', 'error');
+    // isSavePending reste false : la donnée est en sécurité dans localStorage
+    // Le badge orange informe l'utilisateur — pas besoin de bloquer la navigation
+    showToast('Pas de confirmation serveur - sauvegarde locale (badge orange)', 'error');
   }
 
   updateSyncBadge();
