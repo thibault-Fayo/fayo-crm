@@ -360,6 +360,21 @@
   </div>
 </div>
 
+<!-- MODAL CONFIRMATION QUITTER AVEC SAUVEGARDE EN ATTENTE -->
+<div id="leaveConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:white;border-radius:16px;padding:24px 20px;max-width:340px;width:100%;text-align:center;">
+    <div style="font-size:32px;margin-bottom:8px;">⚠️</div>
+    <h3 style="font-size:17px;font-weight:700;color:var(--text);margin-bottom:8px;">Sauvegarde non confirmée</h3>
+    <p style="font-size:14px;color:var(--text-muted);line-height:1.5;margin-bottom:20px;">
+      Une ou plusieurs modifications n'ont pas encore été confirmées par le serveur. Si tu quittes maintenant, elles resteront en attente jusqu'au retour du réseau, mais le risque de perte est plus élevé.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button id="leaveWaitBtn" style="padding:13px;background:var(--green);color:white;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;">Attendre ici</button>
+      <button id="leaveConfirmBtn" style="padding:13px;background:white;color:var(--red);border:1.5px solid var(--red);border-radius:10px;font-size:15px;font-weight:600;cursor:pointer;">Quitter tout de même</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -378,6 +393,7 @@ let currentUserEmail = '';
 let allData = { CRM: [], Clients: [], Distrib: [] };
 let currentTab = 'CRM';
 let currentAccount = null;
+let isSavePending = false; // true tant qu'une sauvegarde n'est pas confirmée
 
 // Filtres multi-choix
 let filtersData = { regions: [], distributeurs: [], responsables: [] };
@@ -397,7 +413,29 @@ function showConfigView() {
   if (SCRIPT_URL) document.getElementById('scriptUrlInput').value = SCRIPT_URL;
   if (CLIENT_ID) document.getElementById('clientIdInput').value = CLIENT_ID;
 }
-function showList() { showOnly('listView'); }
+function updatePendingIndicator() {
+  updateSyncBadge();
+}
+
+function showList() {
+  if (isSavePending || getPending().length > 0) {
+    confirmLeaveWithPending(function() { showOnly('listView'); });
+    return;
+  }
+  showOnly('listView');
+}
+
+function confirmLeaveWithPending(onConfirmLeave) {
+  const modal = document.getElementById('leaveConfirmModal');
+  modal.style.display = 'flex';
+  document.getElementById('leaveConfirmBtn').onclick = function() {
+    modal.style.display = 'none';
+    onConfirmLeave();
+  };
+  document.getElementById('leaveWaitBtn').onclick = function() {
+    modal.style.display = 'none';
+  };
+}
 
 // ============ AUTH ============
 window.onload = function() {
@@ -562,7 +600,14 @@ function getPending() {
 }
 
 function addPending(payload) {
-  const pending = getPending();
+  let pending = getPending();
+  // Dédupliquer : si une modification est déjà en attente pour la même fiche (onglet+rowIndex),
+  // on la remplace par la plus récente au lieu d'accumuler des versions obsolètes
+  if (payload.onglet !== '__new_contact__') {
+    pending = pending.filter(item =>
+      !(item.payload.onglet === payload.onglet && item.payload.rowIndex === payload.rowIndex)
+    );
+  }
   pending.push({ payload, ts: Date.now() });
   localStorage.setItem(PENDING_KEY, JSON.stringify(pending));
   updateSyncBadge();
@@ -589,28 +634,34 @@ function updateSyncBadge() {
 async function syncPending() {
   const pending = getPending();
   if (!pending.length) return;
+
+  // Sécurité : si un pending date de plus de 24h, c'est suspect (peut écraser des changements plus récents)
+  // On prévient clairement avant de l'envoyer plutôt que de le faire silencieusement
+  const veryOld = pending.filter(item => Date.now() - item.ts > 24 * 60 * 60 * 1000);
+  if (veryOld.length > 0) {
+    showToast('⚠️ ' + veryOld.length + ' modification(s) ancienne(s) en attente — vérifiez avant synchro', 'error');
+  }
+
   const token = localStorage.getItem('fayo_id_token') || '';
   const remaining = [];
+  let successCount = 0;
   for (const item of pending) {
-    try {
-      const res = await fetch(SCRIPT_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(Object.assign({}, item.payload, { token }))
-      }).catch(() => null);
-      if (!res) { remaining.push(item); continue; }
-      const json = await res.json().catch(() => ({ ok: true }));
-      if (!json.ok) remaining.push(item);
-    } catch(e) { remaining.push(item); }
+    const success = await sendToServerWithRetry(item.payload, token, 2);
+    if (success) { successCount++; } else { remaining.push(item); }
   }
-  if (remaining.length < pending.length) {
-    localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
-    updateSyncBadge();
-    if (remaining.length === 0) showToast('✅ ' + (pending.length - remaining.length) + ' modification(s) synchronisée(s)', 'success');
-  }
+  localStorage.setItem(PENDING_KEY, JSON.stringify(remaining));
+  updateSyncBadge();
+  if (successCount > 0) showToast('✅ ' + successCount + ' modification(s) synchronisée(s)', 'success');
+  if (remaining.length > 0) showToast('⚠️ ' + remaining.length + ' modification(s) toujours en attente', 'error');
 }
 
-// Détecter retour réseau
+// Avertir avant de fermer l'app/onglet s'il y a des sauvegardes non confirmées
+window.addEventListener('beforeunload', function(e) {
+  if (isSavePending || getPending().length > 0) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 window.addEventListener('online', function() {
   showToast('Réseau rétabli — synchronisation…', '');
   syncPending();
@@ -900,6 +951,7 @@ async function saveCardDate(e, rowIndex) {
 // ============ DETAIL ============
 async function openDetail(account) {
   currentAccount = account;
+  const openedRowIndex = account._rowIndex; // référence pour vérifier qu'on n'a pas changé de fiche
   document.getElementById('detailTitle').textContent = account['Site'];
   document.getElementById('detailOnglet').textContent = currentTab === 'Distrib' ? 'Distrib & SRC' : currentTab;
   showOnly('detailView');
@@ -912,10 +964,12 @@ async function openDetail(account) {
   if (clePartielle) {
     const token = localStorage.getItem('fayo_id_token') || '';
     try {
-      const res = await fetch(`${SCRIPT_URL}?action=contacts&cle=${encodeURIComponent(clePartielle)}&token=${encodeURIComponent(token)}`);
+      const res = await fetch(SCRIPT_URL + '?action=contacts&cle=' + encodeURIComponent(clePartielle) + '&token=' + encodeURIComponent(token));
       const json = await res.json();
-      if (json.ok && json.data.length > 0) {
-        renderDetail(account, json.data);
+      // SÉCURITÉ : on ne réaffiche que si on est toujours sur la même fiche
+      // (l'utilisateur n'a pas ouvert une autre fiche pendant le chargement)
+      if (currentAccount && currentAccount._rowIndex === openedRowIndex && json.ok && json.data.length > 0) {
+        renderDetail(currentAccount, json.data);
       }
     } catch(e) {}
   }
@@ -1202,34 +1256,80 @@ async function saveChanges() {
   if (!navigator.onLine) {
     // Pas de réseau — stocker pour plus tard
     addPending(payload);
-    showToast('📶 Sauvegardé localement — envoi dès que le réseau revient', '');
+    isSavePending = true;
+    showToast('📶 Hors réseau — sauvegardé localement, sera envoyé automatiquement', '');
     btn.disabled = false; btn.textContent = 'Enregistrer les modifications';
+    updatePendingIndicator();
     return;
   }
 
-  try {
-    const res = await fetch(SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(Object.assign({}, payload, { token }))
-    }).catch(() => null);
-    if (res) {
-      const json = await res.json().catch(() => ({ ok: true }));
-      if (!json.ok) throw new Error(json.error);
-    }
-    // res null = timeout Apps Script, on considère que ça a marché (comportement habituel)
-    showToast('✅ Enregistré !', 'success');
-  } catch(e) {
-    // Seulement si c'est une vraie erreur (pas un timeout)
-    if (!navigator.onLine) {
-      addPending(payload);
-      showToast('📶 Hors réseau — modification en attente', '');
-    } else {
-      // Apps Script a répondu avec une erreur
-      showToast('Erreur : ' + e.message, 'error');
+  isSavePending = true;
+  updatePendingIndicator();
+
+  // Tentative d'envoi avec retry — on ne considère JAMAIS un échec comme un succès
+  const success = await sendToServerWithRetry(payload, token, 3);
+
+  isSavePending = false;
+
+  if (success) {
+    showToast('✅ Enregistré et confirmé !', 'success');
+  } else {
+    // Échec confirmé après plusieurs tentatives — mettre en attente et le dire clairement
+    addPending(payload);
+    isSavePending = true;
+    showToast('⚠️ Pas de confirmation serveur — mis en file d\'attente, ne quittez pas sans vérifier le badge', 'error');
+  }
+  updatePendingIndicator();
+  btn.disabled = false; btn.textContent = 'Enregistrer les modifications';
+}
+
+// Envoi fiable avec plusieurs tentatives et timeout explicite
+async function sendToServerWithRetry(payload, token, maxAttempts) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(function() { controller.abort(); }, 15000); // 15s timeout par tentative
+
+      const res = await fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: JSON.stringify(Object.assign({}, payload, { token })),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        // Erreur HTTP — on retry
+        if (attempt < maxAttempts) { await sleep(1000 * attempt); continue; }
+        return false;
+      }
+
+      const text = await res.text();
+      let json;
+      try { json = JSON.parse(text); } catch(e) {
+        // Réponse pas du JSON valide = problème — on retry
+        if (attempt < maxAttempts) { await sleep(1000 * attempt); continue; }
+        return false;
+      }
+
+      if (json.ok === true) {
+        return true; // Succès CONFIRMÉ explicitement par le serveur
+      } else {
+        // Le serveur a répondu mais avec une erreur explicite
+        if (attempt < maxAttempts) { await sleep(1000 * attempt); continue; }
+        return false;
+      }
+    } catch(e) {
+      // Timeout, abort, ou erreur réseau — on retry
+      if (attempt < maxAttempts) { await sleep(1000 * attempt); continue; }
+      return false;
     }
   }
-  btn.disabled = false; btn.textContent = 'Enregistrer les modifications';
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
 
 // ============ NOUVEAU CONTACT ============
