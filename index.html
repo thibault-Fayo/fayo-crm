@@ -375,6 +375,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   </div>
 </div>
 
+<!-- MODAL SYNC EN ATTENTE -->
+<div id="syncActionModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:white;border-radius:16px;padding:24px 20px;max-width:340px;width:100%;text-align:center;">
+    <div style="font-size:28px;margin-bottom:8px;">&#128225;</div>
+    <h3 style="font-size:17px;font-weight:700;margin-bottom:6px;">Modifications en attente</h3>
+    <p id="syncActionCount" style="font-size:14px;color:var(--text-muted);margin-bottom:16px;"></p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button onclick="syncActionRetry()" style="padding:13px;background:var(--green);color:white;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;">Reessayer la synchronisation</button>
+      <button onclick="syncActionClear()" style="padding:13px;background:white;color:var(--red);border:1.5px solid var(--red);border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Vider la file (donnees deja enregistrees)</button>
+      <button onclick="closeSyncActionModal()" style="padding:10px;background:white;color:var(--text-muted);border:1.5px solid var(--border);border-radius:10px;font-size:14px;cursor:pointer;">Annuler</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -454,7 +468,9 @@ function showList() {
     });
     return;
   }
-  if (getPending().length > 0) {
+  // isSavePending = requête réseau active en vol → risque réel de perte
+  // getPending().length > 0 = déjà en localStorage → en sécurité, navigation libre
+  if (isSavePending) {
     confirmPending(function() {
       showOnly('listView');
     });
@@ -681,45 +697,30 @@ function updateSyncBadge() {
   }
 }
 
-var syncBadgePressTimer = null;
 function handleSyncBadgeClick() {
-  // Appui court : synchroniser
-  syncPending();
-}
-function handleSyncBadgeLongPress() {
-  // Appui long (600ms) : proposer de vider manuellement
   var count = getPending().length;
   if (!count) return;
-  var confirmed = window.confirm(
-    count + ' modification(s) en attente.\n\n' +
-    'Si tu as verifie que les donnees sont bien dans le Google Sheet, ' +
-    'tu peux vider la file d\'attente.\n\n' +
-    'Vider la file ?'
-  );
-  if (confirmed) {
-    localStorage.removeItem(PENDING_KEY);
-    isSavePending = false;
-    updateSyncBadge();
-    showToast('File d\'attente videe', 'success');
-  }
+  var modal = document.getElementById('syncActionModal');
+  document.getElementById('syncActionCount').textContent = count + ' modification(s) en attente';
+  modal.style.display = 'flex';
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-  var badge = document.getElementById('syncBadge');
-  if (!badge) return;
-  badge.addEventListener('touchstart', function() {
-    syncBadgePressTimer = setTimeout(handleSyncBadgeLongPress, 600);
-  });
-  badge.addEventListener('touchend', function() {
-    clearTimeout(syncBadgePressTimer);
-  });
-  badge.addEventListener('mousedown', function() {
-    syncBadgePressTimer = setTimeout(handleSyncBadgeLongPress, 600);
-  });
-  badge.addEventListener('mouseup', function() {
-    clearTimeout(syncBadgePressTimer);
-  });
-});
+function closeSyncActionModal() {
+  document.getElementById('syncActionModal').style.display = 'none';
+}
+
+function syncActionRetry() {
+  closeSyncActionModal();
+  syncPending();
+}
+
+function syncActionClear() {
+  closeSyncActionModal();
+  localStorage.removeItem(PENDING_KEY);
+  isSavePending = false;
+  updateSyncBadge();
+  showToast('File d\'attente videe', 'success');
+}
 
 async function syncPending() {
   var pending = getPending();
@@ -753,7 +754,9 @@ window.addEventListener('online', function() {
 });
 
 window.addEventListener('beforeunload', function(e) {
-  if (isSavePending || getPending().length > 0 || hasUnsavedChanges()) {
+  // Bloquer uniquement si requête active en vol ou changements pas encore sauvegardés
+  // La file d'attente localStorage est sûre — pas besoin de bloquer pour ça
+  if (isSavePending || hasUnsavedChanges()) {
     e.preventDefault();
     e.returnValue = '';
   }
